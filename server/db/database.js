@@ -25,28 +25,74 @@ function translateSqlForPostgres(sql) {
 }
 
 function getDb() {
-  if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-  }
+  if (db) return db;
+  db = new Database(DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   return db;
 }
 
-function getPgPool() {
+function getPgPool() { 
   if (!pgPool && process.env.DATABASE_URL) {
     pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
   }
   return pgPool;
 }
 
+function translateSqlForPostgres(sql) {
+  let translated = sql
+    .replace(/strftime\('%Y-%m',\s*([^\)]+)\)/g, "to_char($1, 'YYYY-MM')")
+    .replace(/datetime\('now'\)/g, 'CURRENT_TIMESTAMP')
+    .replace(/datetime\('now'\s*,\s*'([^']+)'\)/g, 'CURRENT_TIMESTAMP')
+    .replace(/date\('now'\)/g, 'CURRENT_DATE');
+
+  let index = 0;
+  translated = translated.replace(/\?/g, () => {
+    index += 1;
+    return `$${index}`;
+  });
+
+  return translated;
+}
+
 async function queryPg(sql, params = []) {
   const pool = getPgPool();
   if (!pool) throw new Error('PostgreSQL pool is not available');
+  if (pool.__initPromise) await pool.__initPromise;
   const translated = translateSqlForPostgres(sql);
   const result = await pool.query(translated, params);
   return result.rows;
 }
+
+async function runPg(sql, params = []) {
+  const pool = getPgPool();
+  if (!pool) throw new Error('PostgreSQL pool is not available');
+  if (pool.__initPromise) await pool.__initPromise;
+  const translated = translateSqlForPostgres(sql);
+  await pool.query(translated, params);
+}
+
+function getDbClient() {
+  if (isPostgresEnabled()) {
+    return {
+      // sqlite-like API subset
+      all: (sql, params = []) => queryPg(sql, params),
+      get: async (sql, params = []) => {
+        const rows = await queryPg(sql, params);
+        return rows[0] || null;
+      },
+      run: (sql, params = []) => runPg(sql, params),
+    };
+  }
+
+  const sqlite = getDb();
+  return {
+    all: (sql, params = []) => Promise.resolve(sqlite.prepare(sql).all(...params)),
+    get: (sql, params = []) => Promise.resolve(sqlite.prepare(sql).get(...params)),
+    run: (sql, params = []) => Promise.resolve(sqlite.prepare(sql).run(...params)),
+  };
+}
+
 
 function isPostgresEnabled() {
   return Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
@@ -63,13 +109,147 @@ function logEvent(level, message, details = {}) {
   return entry;
 }
 
+function pgifySqlForInit(sql) {
+  // SQLite datetime/date helpers -> Postgres equivalents
+  return sql
+    .replace(/datetime\('now'\)/g, 'NOW()')
+    .replace(/date\('now'\)/g, 'CURRENT_DATE')
+    .replace(/datetime\('now'\s*,\s*'([^']+)'\)/g, 'NOW()');
+}
+
 function initializeDatabase() {
   if (isPostgresEnabled()) {
     const pool = getPgPool();
-    if (pool) {
-      logEvent('info', 'Using PostgreSQL database for production persistence');
-      return pool;
-    }
+    if (!pool) return null;
+
+    logEvent('info', 'Using PostgreSQL database for production persistence');
+    const initSql = `
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      plan TEXT DEFAULT 'Free',
+      streak INTEGER DEFAULT 0,
+      xp INTEGER DEFAULT 0,
+      level INTEGER DEFAULT 1,
+      badges TEXT DEFAULT '[]',
+      referral_code TEXT UNIQUE,
+      referred_by TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      last_active TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS interviews (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      company TEXT,
+      type TEXT DEFAULT 'mock',
+      question TEXT,
+      answer TEXT,
+      score INTEGER,
+      feedback TEXT,
+      skills TEXT DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS resumes (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      text TEXT,
+      analysis TEXT,
+      company TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS challenge_completions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      challenge_date TEXT DEFAULT (date('now')),
+      skill TEXT,
+      completed INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      stripe_session_id TEXT,
+      plan TEXT,
+      amount INTEGER,
+      currency TEXT DEFAULT 'usd',
+      status TEXT DEFAULT 'pending',
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      type TEXT DEFAULT 'info',
+      title TEXT,
+      message TEXT,
+      read INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS question_bank (
+      id TEXT PRIMARY KEY,
+      company TEXT NOT NULL,
+      category TEXT DEFAULT 'behavioral',
+      difficulty TEXT DEFAULT 'medium',
+      question TEXT NOT NULL,
+      expected_answer TEXT,
+      hints TEXT DEFAULT '[]',
+      tags TEXT DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS referrals (
+      id TEXT PRIMARY KEY,
+      referrer_id TEXT NOT NULL,
+      referred_email TEXT,
+      referred_id TEXT,
+      status TEXT DEFAULT 'pending',
+      xp_bonus INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (referrer_id) REFERENCES users(id),
+      FOREIGN KEY (referred_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS admin_logs (
+      id TEXT PRIMARY KEY,
+      admin_id TEXT,
+      action TEXT,
+      details TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_tips (
+      id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      category TEXT DEFAULT 'general',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_users_referral ON users(referral_code);
+    CREATE INDEX IF NOT EXISTS idx_interviews_user ON interviews(user_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
+    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+  `;
+
+    // pool.query is async; but initializeDatabase is called in sync startup.
+    // We'll run it synchronously by using a blocking pattern via deasync is not allowed;
+    // instead: return pool and let first queries work after tables exist.
+    // However to ensure initialization happens, we attach a startup promise.
+    pool.__initPromise = pool.__initPromise || pool.query(pgifySqlForInit(initSql));
+    return pool;
   }
 
   const db = getDb();
@@ -198,7 +378,97 @@ function initializeDatabase() {
   return db;
 }
 
-function seedDatabase() {
+async function seedDatabase() {
+  // Always seed using the active DB engine.
+  if (isPostgresEnabled()) {
+    const pool = getPgPool();
+    if (!pool) return;
+
+    // Seed question bank if empty
+    const { rows: qcRows } = await pool.query('SELECT COUNT(*)::int AS count FROM question_bank');
+    const questionCount = qcRows?.[0]?.count ?? 0;
+    if (questionCount === 0) {
+      const questions = [
+        { company: 'Amazon', category: 'system_design', difficulty: 'hard', question: 'Design a scalable notification service for a high-traffic e-commerce app.', expected_answer: 'Use a message queue (SQS/Kafka), fan-out pattern, push/pull strategies, consider idempotency and retry logic.' },
+        { company: 'Amazon', category: 'behavioral', difficulty: 'medium', question: 'Tell me about a time you had to make a decision with incomplete data.', expected_answer: 'Describe the situation, actions taken with available data, and outcome using STAR method.' },
+        { company: 'Google', category: 'system_design', difficulty: 'hard', question: 'Design Google Docs collaboration feature at scale.', expected_answer: 'Use operational transformation or CRDTs, WebSocket for real-time sync, versioning for conflict resolution.' },
+        { company: 'Google', category: 'algorithms', difficulty: 'hard', question: 'Design a search suggestion service with sub-100ms latency.', expected_answer: 'Use a trie data structure, prefix caching, precomputed suggestions, CDN for static results.' },
+        { company: 'Microsoft', category: 'system_design', difficulty: 'medium', question: 'Design a secure authentication flow for a SaaS platform.', expected_answer: 'OAuth 2.0 / OpenID Connect, JWT tokens, refresh token rotation, MFA support, session management.' },
+        { company: 'Adobe', category: 'system_design', difficulty: 'hard', question: 'Design a collaborative photo editing service.', expected_answer: 'WebSocket for real-time sync, layer-based state management, conflict resolution, CDN for assets.' },
+        { company: 'TCS', category: 'behavioral', difficulty: 'easy', question: 'How do you handle a difficult client requirement?', expected_answer: 'Listen actively, ask clarifying questions, propose alternatives, document decisions, maintain professional relationship.' },
+        { company: 'Amazon', category: 'algorithms', difficulty: 'medium', question: 'Design a rate limiter for a high-traffic API.', expected_answer: 'Token bucket or sliding window algorithm, Redis for distributed counting, per-user quotas.' },
+        { company: 'Google', category: 'algorithms', difficulty: 'medium', question: 'Design a URL shortening service like TinyURL.', expected_answer: 'Base62 encoding for short URLs, hash function, collision handling, redirect with 301/302.' },
+        { company: 'Amazon', category: 'leadership', difficulty: 'hard', question: 'Tell me about a time you invented and simplified a process.', expected_answer: 'Identify the complexity, propose simplification, implement change, measure improvement. Use STAR format.' },
+      ];
+
+      const insertSql = `
+        INSERT INTO question_bank (id, company, category, difficulty, question, expected_answer, hints, tags)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `;
+
+      const insertPromises = questions.map((q) => {
+        return pool.query(insertSql, [
+          require('uuid').v4(),
+          q.company,
+          q.category,
+          q.difficulty,
+          q.question,
+          q.expected_answer,
+          JSON.stringify([]),
+          JSON.stringify([q.category, q.difficulty]),
+        ]);
+      });
+
+      await Promise.all(insertPromises);
+    }
+
+    // Seed admin user if none exists
+    const { rows: adminRows } = await pool.query('SELECT COUNT(*)::int AS count FROM users WHERE email = $1', ['admin@interviewcopilot.com']);
+    const adminCount = adminRows?.[0]?.count ?? 0;
+    if (adminCount === 0) {
+      const crypto = require('crypto');
+      const hashedPassword = crypto.createHash('sha256').update('admin123').digest('hex');
+
+      await pool.query(
+        `INSERT INTO users (id, name, email, password, plan, xp, level, badges, referral_code)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          require('uuid').v4(),
+          'Admin',
+          'admin@interviewcopilot.com',
+          hashedPassword,
+          'Elite',
+          9999,
+          50,
+          JSON.stringify(['Admin', 'Early Adopter', 'Premium Plan']),
+          'ADMIN001',
+        ]
+      );
+    }
+
+    // Seed daily tips if empty
+    const { rows: tipRows } = await pool.query('SELECT COUNT(*)::int AS count FROM daily_tips');
+    const tipCount = tipRows?.[0]?.count ?? 0;
+    if (tipCount === 0) {
+      const tips = [
+        { content: 'Use the STAR method (Situation, Task, Action, Result) for behavioral questions.', category: 'behavioral' },
+        { content: 'Always explain your thought process before writing code in DSA rounds.', category: 'dsa' },
+        { content: 'For system design, start with requirements, then move to high-level design, then deep dive.', category: 'system_design' },
+        { content: 'Track your progress with daily challenges to build consistency.', category: 'general' },
+        { content: 'Record yourself answering questions to identify filler words and pacing issues.', category: 'communication' },
+        { content: 'Research the company values and align your answers with them.', category: 'preparation' },
+        { content: 'Focus on impact metrics (numbers, percentages) in your resume projects.', category: 'resume' },
+      ];
+
+      const insertSql = `INSERT INTO daily_tips (id, content, category) VALUES ($1,$2,$3)`;
+      await Promise.all(
+        tips.map((t) => pool.query(insertSql, [require('uuid').v4(), t.content, t.category]))
+      );
+    }
+
+    return;
+  }
+
   const db = getDb();
 
   // Seed question bank if empty
@@ -275,4 +545,14 @@ function seedDatabase() {
   }
 }
 
-module.exports = { getDb, getPgPool, initializeDatabase, seedDatabase, logEvent, isPostgresEnabled, translateSqlForPostgres };
+
+module.exports = {
+  getDb,
+  getPgPool,
+  getDbClient,
+  initializeDatabase,
+  seedDatabase,
+  logEvent,
+  isPostgresEnabled,
+  translateSqlForPostgres,
+};

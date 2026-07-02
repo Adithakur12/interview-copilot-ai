@@ -1,5 +1,10 @@
-const { getDb } = require('../db/database');
+const { getDbClient, getDb } = require('../db/database');
+
+
+
 const { v4: uuidv4 } = require('uuid');
+
+
 
 const XP_THRESHOLDS = {
   INTERVIEW_COMPLETE: 50,
@@ -50,6 +55,10 @@ function calculateLevel(xp) {
 function awardXP(userId, amount, reason, { checkBadges = true } = {}) {
   const db = getDb();
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+
+
+
+
   if (!user) return null;
 
   const newXp = user.xp + amount;
@@ -57,6 +66,8 @@ function awardXP(userId, amount, reason, { checkBadges = true } = {}) {
   const leveledUp = newLevel > user.level;
 
   db.prepare('UPDATE users SET xp = ?, level = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newXp, newLevel, userId);
+
+
 
   const result = { xp: newXp, level: newLevel, leveledUp, amount, reason };
 

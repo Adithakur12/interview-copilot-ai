@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { getDb } = require('../db/database');
+const { getDbClient } = require('../db/database');
 const { generateToken, authenticate } = require('../middleware/auth');
 const { awardXP, updateStreak, createNotification } = require('../services/gamification');
 

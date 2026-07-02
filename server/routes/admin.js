@@ -1,6 +1,8 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { getDb } = require('../db/database');
+const { getDbClient } = require('../db/database');
+
+
 const { authenticate, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -9,8 +11,8 @@ const router = express.Router();
 router.use(authenticate, requireAdmin);
 
 // Dashboard stats
-router.get('/dashboard', (req, res) => {
-  const db = getDb();
+router.get('/dashboard', async (req, res) => {
+  const db = getDbClient();
 
   const totalUsers = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
   const totalInterviews = db.prepare('SELECT COUNT(*) as c FROM interviews').get().c;
@@ -65,7 +67,7 @@ router.get('/dashboard', (req, res) => {
 
 // Get all users (paginated)
 router.get('/users', (req, res) => {
-  const db = getDb();
+  const db = getDbClient();
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
   const offset = (page - 1) * limit;

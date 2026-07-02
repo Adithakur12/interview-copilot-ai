@@ -1,6 +1,7 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { getDb } = require('../db/database');
+const { getDbClient } = require('../db/database');
+
 const { authenticate } = require('../middleware/auth');
 const { awardXP } = require('../services/gamification');
 const {

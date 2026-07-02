@@ -1,5 +1,5 @@
 const express = require('express');
-const { getDb } = require('../db/database');
+const { getDbClient } = require('../db/database');
 const { authenticate } = require('../middleware/auth');
 const { createCheckoutSession, upgradePlanDirect, getPaymentHistory, handleStripeWebhook, PLANS } = require('../services/payments');
 
@@ -19,8 +19,8 @@ router.post('/checkout', authenticate, async (req, res) => {
 
   if (PLANS[plan].price === 0) {
     // Free plan - just update
-    const db = getDb();
-    db.prepare('UPDATE users SET plan = ?, updated_at = datetime(\'now\') WHERE id = ?').run(plan, req.user.id);
+    const db = getDbClient();
+    await db.run('UPDATE users SET plan = ?, updated_at = datetime(\'now\') WHERE id = ?', [plan, req.user.id]);
     return res.json({ success: true, plan, message: 'Free plan activated.' });
   }
 
@@ -31,6 +31,7 @@ router.post('/checkout', authenticate, async (req, res) => {
     res.status(500).json({ error: 'Failed to create checkout session.' });
   }
 });
+
 
 // Direct upgrade (for development / when Stripe is not configured)
 router.post('/upgrade', authenticate, (req, res) => {

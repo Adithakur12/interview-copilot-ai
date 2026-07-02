@@ -118,11 +118,15 @@ if (require.main === module) {
   // Initialize database and seed data
   try {
     initializeDatabase();
-    seedDatabase();
-    info('Database initialized and seeded.', { postgres: isPostgresEnabled() });
+    // Ensure schema exists before the app starts accepting requests.
+    // Also ensures Postgres seeding works with async pg client.
+    Promise.resolve(seedDatabase())
+      .catch((err) => error('Database seeding error', { message: err.message }));
+    info('Database initialized.', { postgres: isPostgresEnabled() });
   } catch (err) {
     error('Database initialization error', { message: err.message });
   }
+
 
   const port = getPort(process.env.PORT);
   const host = process.env.HOST || '0.0.0.0';
