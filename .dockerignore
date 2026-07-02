@@ -1,0 +1,15 @@
+.git
+.gitignore
+node_modules
+.env
+.env.example
+*.log
+.DS_Store
+.vscode
+server/app.db
+server/app.db-shm
+server/app.db-wal
+server/logs/
+docs/
+scripts/
+.gitmodules

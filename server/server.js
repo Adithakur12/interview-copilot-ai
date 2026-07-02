@@ -109,34 +109,46 @@ app.use((err, req, res, _next) => {
 });
 
 // --------------- Start Server ---------------
-function getPort(envPort = process.env.PORT) {
-  const parsed = Number(envPort || 4000);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 4000;
+function getPort() {
+  const envPort = process.env.PORT;
+  const parsed = Number(envPort);
+  if (Number.isFinite(parsed) && parsed > 0 && parsed <= 65535) return parsed;
+  // Render and other platforms always set PORT. Hardcoded default only for local dev.
+  if (process.env.NODE_ENV === 'production') {
+    console.error('\n  ❌ FATAL: PORT environment variable must be set in production.\n');
+    process.exit(1);
+  }
+  return 4000; // local dev fallback only
 }
 
 if (require.main === module) {
+  // ----- PostgreSQL is REQUIRED in production -----
+  if (process.env.NODE_ENV === 'production' && !isPostgresEnabled()) {
+    console.error('\n  ❌ FATAL: PostgreSQL is required in production.');
+    console.error('     Set DATABASE_URL to your PostgreSQL connection string.\n');
+    process.exit(1);
+  }
+
   // Initialize database and seed data
   try {
     initializeDatabase();
-    // Ensure schema exists before the app starts accepting requests.
-    // Also ensures Postgres seeding works with async pg client.
     Promise.resolve(seedDatabase())
       .catch((err) => error('Database seeding error', { message: err.message }));
     info('Database initialized.', { postgres: isPostgresEnabled() });
   } catch (err) {
     error('Database initialization error', { message: err.message });
+    if (process.env.NODE_ENV === 'production') process.exit(1);
   }
 
-
-  const port = getPort(process.env.PORT);
+  const port = getPort();
   const host = process.env.HOST || '0.0.0.0';
   app.listen(port, host, () => {
     console.log(`\n  Interview Copilot API v2`);
     console.log(`  ─────────────────────`);
-    console.log(`  Server:    http://localhost:${port}`);
-    console.log(`  Health:    http://localhost:${port}/api/health`);
+    console.log(`  Server:    http://0.0.0.0:${port}`);
+    console.log(`  Health:    http://0.0.0.0:${port}/api/health`);
     console.log(`  Gemini AI: ${process.env.GEMINI_API_KEY ? 'Enabled' : 'Fallback mode'}`);
-    console.log(`  Frontend:  http://localhost:5173 (dev mode)\n`);
+    console.log(`  Database:  ${isPostgresEnabled() ? 'PostgreSQL' : 'SQLite (dev only)'}\n`);
   });
 }
 

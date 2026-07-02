@@ -3,3 +3,13 @@ server/node_modules/
 src/node_modules/
 server/.env
 .env
+.env.local
+server/app.db
+server/app.db-shm
+server/app.db-wal
+server/logs/
+dist/
+src/dist/
+.DS_Store
+.vscode/
+*.log
