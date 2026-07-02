@@ -34,19 +34,19 @@ router.post('/checkout', authenticate, async (req, res) => {
 
 
 // Direct upgrade (for development / when Stripe is not configured)
-router.post('/upgrade', authenticate, (req, res) => {
+router.post('/upgrade', authenticate, async (req, res) => {
   const { plan } = req.body;
   if (!plan || !PLANS[plan]) {
     return res.status(400).json({ error: 'Invalid plan selected.' });
   }
 
-  const result = upgradePlanDirect(req.user.email, plan);
+  const result = await upgradePlanDirect(req.user.email, plan);
   res.json(result);
 });
 
 // Payment history
-router.get('/history', authenticate, (req, res) => {
-  const history = getPaymentHistory(req.user.id);
+router.get('/history', authenticate, async (req, res) => {
+  const history = await getPaymentHistory(req.user.id);
   res.json(history);
 });
 

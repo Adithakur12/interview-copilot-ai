@@ -46,24 +46,29 @@ function buildDsaCoachReply(message, question = '') {
 }
 
 // Readiness dashboard
-router.get('/readiness', authenticate, (req, res) => {
-  const db = getDb();
-  const history = db.prepare('SELECT * FROM interviews WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').all(req.user.id);
-  const { analysis = {}, profile = {}, company = 'Amazon', role = 'Software Engineer' } = req.query;
-  let parsedAnalysis = {};
-  let parsedProfile = {};
-  try { parsedAnalysis = JSON.parse(analysis); } catch { parsedAnalysis = {}; }
-  try { parsedProfile = JSON.parse(profile); } catch { parsedProfile = {}; }
-  res.json(buildReadinessDashboard({
-    analysis: parsedAnalysis,
-    interviewHistory: history,
-    profile: parsedProfile,
-    company: company || 'Amazon',
-    role: role || 'Software Engineer'
-  }));
+router.get('/readiness', authenticate, async (req, res) => {
+  try {
+    const db = getDbClient();
+    const history = await db.all('SELECT * FROM interviews WHERE user_id = ? ORDER BY created_at DESC LIMIT 20', [req.user.id]);
+    const { analysis = {}, profile = {}, company = 'Amazon', role = 'Software Engineer' } = req.query;
+    let parsedAnalysis = {};
+    let parsedProfile = {};
+    try { parsedAnalysis = JSON.parse(analysis); } catch { parsedAnalysis = {}; }
+    try { parsedProfile = JSON.parse(profile); } catch { parsedProfile = {}; }
+    res.json(buildReadinessDashboard({
+      analysis: parsedAnalysis,
+      interviewHistory: history,
+      profile: parsedProfile,
+      company: company || 'Amazon',
+      role: role || 'Software Engineer'
+    }));
+  } catch (err) {
+    console.error('Readiness error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
 });
 
-router.post('/readiness', authenticate, (req, res) => {
+router.post('/readiness', authenticate, async (req, res) => {
   const { analysis = {}, interviewHistory = [], profile = {}, company = 'Amazon', role = 'Software Engineer' } = req.body;
   res.json(buildReadinessDashboard({ analysis, interviewHistory, profile, company, role }));
 });
@@ -180,20 +185,23 @@ router.post('/daily-challenge', authenticate, (req, res) => {
 });
 
 // Complete daily challenge
-router.post('/daily-challenge/complete', authenticate, (req, res) => {
+router.post('/daily-challenge/complete', authenticate, async (req, res) => {
   const { skill = 'General' } = req.body;
-  const db = getDb();
-
-  const today = new Date().toISOString().split('T')[0];
-  const existing = db.prepare('SELECT * FROM challenge_completions WHERE user_id = ? AND challenge_date = ?').get(req.user.id, today);
-  if (!existing) {
-    db.prepare(`INSERT INTO challenge_completions (id, user_id, challenge_date, skill, completed) VALUES (?, ?, ?, ?, ?)`).run(
-      uuidv4(), req.user.id, today, skill, 1
-    );
-    awardXP(req.user.id, 40, 'Daily challenge completed');
-    res.json({ success: true, xpAwarded: 40 });
-  } else {
-    res.json({ success: true, message: 'Challenge already completed today.' });
+  try {
+    const db = getDbClient();
+    const today = new Date().toISOString().split('T')[0];
+    const existing = await db.get('SELECT * FROM challenge_completions WHERE user_id = ? AND challenge_date = ?', [req.user.id, today]);
+    if (!existing) {
+      await db.run('INSERT INTO challenge_completions (id, user_id, challenge_date, skill, completed) VALUES (?, ?, ?, ?, ?)',
+        [uuidv4(), req.user.id, today, skill, 1]);
+      await awardXP(req.user.id, 40, 'Daily challenge completed');
+      res.json({ success: true, xpAwarded: 40 });
+    } else {
+      res.json({ success: true, message: 'Challenge already completed today.' });
+    }
+  } catch (err) {
+    console.error('Daily challenge complete error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
   }
 });
 
@@ -245,98 +253,132 @@ Coach this candidate using their skills ${(analysis.skills || []).join(', ')} an
 });
 
 // Get user stats
-router.get('/stats', authenticate, (req, res) => {
-  const db = getDb();
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
+router.get('/stats', authenticate, async (req, res) => {
+  try {
+    const db = getDbClient();
+    const user = await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
 
-  const interviewCount = db.prepare('SELECT COUNT(*) as c FROM interviews WHERE user_id = ?').get(req.user.id).c;
-  const avgScore = db.prepare('SELECT COALESCE(AVG(score), 0) as avg FROM interviews WHERE user_id = ?').get(req.user.id).avg;
-  const dsaCount = db.prepare('SELECT COUNT(*) as c FROM interviews WHERE user_id = ? AND type = ?').get(req.user.id, 'dsa').c;
-  const challengesDone = db.prepare('SELECT COUNT(*) as c FROM challenge_completions WHERE user_id = ? AND completed = 1').get(req.user.id).c;
-  const rank = db.prepare('SELECT COUNT(*) as c FROM users WHERE xp > ?').get(user.xp).c + 1;
+    const interviewCount = await db.get('SELECT COUNT(*) as c FROM interviews WHERE user_id = ?', [req.user.id]);
+    const avgScore = await db.get('SELECT COALESCE(AVG(score), 0) as avg FROM interviews WHERE user_id = ?', [req.user.id]);
+    const dsaCount = await db.get('SELECT COUNT(*) as c FROM interviews WHERE user_id = ? AND type = ?', [req.user.id, 'dsa']);
+    const challengesDone = await db.get('SELECT COUNT(*) as c FROM challenge_completions WHERE user_id = ? AND completed = 1', [req.user.id]);
+    const rank = await db.get('SELECT COUNT(*) as c FROM users WHERE xp > ?', [user.xp]);
 
-  const interviews = db.prepare('SELECT * FROM interviews WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(req.user.id);
+    const interviews = await db.all('SELECT * FROM interviews WHERE user_id = ? ORDER BY created_at DESC LIMIT 10', [req.user.id]);
 
-  const skillCounts = {};
-  interviews.forEach((item) => {
-    try {
-      const skills = JSON.parse(item.skills || '[]');
-      skills.forEach((skill) => { skillCounts[skill] = (skillCounts[skill] || 0) + 1; });
-    } catch {
-      // ignore malformed skill JSON
-    }
-  });
+    const skillCounts = {};
+    interviews.forEach((item) => {
+      try {
+        const skills = JSON.parse(item.skills || '[]');
+        skills.forEach((skill) => { skillCounts[skill] = (skillCounts[skill] || 0) + 1; });
+      } catch {
+        // ignore malformed skill JSON
+      }
+    });
 
-  const scoreTrend = interviews
-    .filter((item) => item.score)
-    .reverse()
-    .slice(0, 10)
-    .map((item) => ({ date: item.created_at, score: item.score }));
+    const scoreTrend = interviews
+      .filter((item) => item.score)
+      .reverse()
+      .slice(0, 10)
+      .map((item) => ({ date: item.created_at, score: item.score }));
 
-  res.json({
-    stats: {
-      interviewCount,
-      avgScore: Math.round(avgScore),
-      dsaCount,
-      challengesDone,
-      xp: user.xp,
-      level: user.level,
-      streak: user.streak,
-      rank,
-      plan: user.plan,
-    },
-    skillBreakdown: Object.entries(skillCounts).map(([name, count]) => ({ name, count })),
-    scoreTrend,
-    recentInterviews: interviews.slice(0, 5),
-  });
+    res.json({
+      stats: {
+        interviewCount: interviewCount.c,
+        avgScore: Math.round(avgScore.avg),
+        dsaCount: dsaCount.c,
+        challengesDone: challengesDone.c,
+        xp: user.xp,
+        level: user.level,
+        streak: user.streak,
+        rank: rank.c + 1,
+        plan: user.plan,
+      },
+      skillBreakdown: Object.entries(skillCounts).map(([name, count]) => ({ name, count })),
+      scoreTrend,
+      recentInterviews: interviews.slice(0, 5),
+    });
+  } catch (err) {
+    console.error('Stats error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
 });
 
 // Leaderboard
-router.get('/leaderboard', (req, res) => {
-  const db = getDb();
-  const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
-  const leaderboard = db.prepare(`
-    SELECT id, name, plan, xp, level, streak,
-      (SELECT COUNT(*) FROM interviews WHERE user_id = users.id) as interview_count,
-      (SELECT COALESCE(AVG(score), 0) FROM interviews WHERE user_id = users.id) as avg_score
-    FROM users
-    ORDER BY xp DESC
-    LIMIT ?
-  `).all(limit);
-
-  res.json(leaderboard);
+router.get('/leaderboard', async (req, res) => {
+  try {
+    const db = getDbClient();
+    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    const leaderboard = await db.all(`
+      SELECT id, name, plan, xp, level, streak,
+        (SELECT COUNT(*) FROM interviews WHERE user_id = users.id) as interview_count,
+        (SELECT COALESCE(AVG(score), 0) FROM interviews WHERE user_id = users.id) as avg_score
+      FROM users
+      ORDER BY xp DESC
+      LIMIT ?
+    `, [limit]);
+    res.json(leaderboard);
+  } catch (err) {
+    console.error('Leaderboard error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
 });
 
 // Notifications
-router.get('/notifications', authenticate, (req, res) => {
-  const db = getDb();
-  const notifications = db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').all(req.user.id);
-  res.json(notifications);
+router.get('/notifications', authenticate, async (req, res) => {
+  try {
+    const db = getDbClient();
+    const notifications = await db.all('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20', [req.user.id]);
+    res.json(notifications);
+  } catch (err) {
+    console.error('Notifications error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
 });
 
-router.put('/notifications/:id/read', authenticate, (req, res) => {
-  const db = getDb();
-  db.prepare('UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
-  res.json({ success: true });
+router.put('/notifications/:id/read', authenticate, async (req, res) => {
+  try {
+    const db = getDbClient();
+    await db.run('UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Notification read error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
 });
 
-router.put('/notifications/read-all', authenticate, (req, res) => {
-  const db = getDb();
-  db.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?').run(req.user.id);
-  res.json({ success: true });
+router.put('/notifications/read-all', authenticate, async (req, res) => {
+  try {
+    const db = getDbClient();
+    await db.run('UPDATE notifications SET read = 1 WHERE user_id = ?', [req.user.id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Notification read-all error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
 });
 
-router.post('/notifications/read-all', authenticate, (req, res) => {
-  const db = getDb();
-  db.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?').run(req.user.id);
-  res.json({ success: true });
+router.post('/notifications/read-all', authenticate, async (req, res) => {
+  try {
+    const db = getDbClient();
+    await db.run('UPDATE notifications SET read = 1 WHERE user_id = ?', [req.user.id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Notification read-all error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
 });
 
-router.get('/daily-tip', authenticate, (req, res) => {
-  const db = getDb();
-  const tip = db.prepare('SELECT * FROM daily_tips ORDER BY RANDOM() LIMIT 1').get();
-  res.json(tip || { content: 'Practice makes perfect. Keep showing up every day!' });
+router.get('/daily-tip', authenticate, async (req, res) => {
+  try {
+    const db = getDbClient();
+    const tip = await db.get('SELECT * FROM daily_tips ORDER BY RANDOM() LIMIT 1');
+    res.json(tip || { content: 'Practice makes perfect. Keep showing up every day!' });
+  } catch (err) {
+    console.error('Daily tip error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
 });
 
 module.exports = router;

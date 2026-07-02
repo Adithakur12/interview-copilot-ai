@@ -39,22 +39,6 @@ function getPgPool() {
   return pgPool;
 }
 
-function translateSqlForPostgres(sql) {
-  let translated = sql
-    .replace(/strftime\('%Y-%m',\s*([^\)]+)\)/g, "to_char($1, 'YYYY-MM')")
-    .replace(/datetime\('now'\)/g, 'CURRENT_TIMESTAMP')
-    .replace(/datetime\('now'\s*,\s*'([^']+)'\)/g, 'CURRENT_TIMESTAMP')
-    .replace(/date\('now'\)/g, 'CURRENT_DATE');
-
-  let index = 0;
-  translated = translated.replace(/\?/g, () => {
-    index += 1;
-    return `$${index}`;
-  });
-
-  return translated;
-}
-
 async function queryPg(sql, params = []) {
   const pool = getPgPool();
   if (!pool) throw new Error('PostgreSQL pool is not available');

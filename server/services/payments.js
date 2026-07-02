@@ -1,5 +1,4 @@
 const { getDbClient } = require('../db/database');
-
 const { v4: uuidv4 } = require('uuid');
 const { awardXP, createNotification } = require('./gamification');
 
@@ -16,7 +15,6 @@ function getPlanPrice(plan) {
 async function createCheckoutSession(user, plan) {
   const stripe = getStripe();
   if (!stripe) {
-    // Fallback: upgrade directly without payment (for development)
     return upgradePlanDirect(user.email, plan);
   }
 
@@ -44,22 +42,19 @@ async function createCheckoutSession(user, plan) {
       },
     });
 
-    // Record payment
-    const db = getDb();
-    db.prepare(`INSERT INTO payments (id, user_id, stripe_session_id, plan, amount, currency, status) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
-      uuidv4(), user.id, session.id, plan, PLANS[plan]?.price || 0, 'usd', 'pending'
-    );
+    const db = getDbClient();
+    await db.run('INSERT INTO payments (id, user_id, stripe_session_id, plan, amount, currency, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [uuidv4(), user.id, session.id, plan, PLANS[plan]?.price || 0, 'usd', 'pending']);
 
     return { sessionId: session.id, url: session.url };
   } catch (error) {
     console.error('Stripe session creation failed:', error.message);
-    // Fallback
     return upgradePlanDirect(user.email, plan);
   }
 }
 
 async function handleStripeWebhook(event) {
-  const db = getDb();
+  const db = getDbClient();
   const stripe = getStripe();
 
   switch (event.type) {
@@ -67,41 +62,37 @@ async function handleStripeWebhook(event) {
       const session = event.data.object;
       const { user_id, plan } = session.metadata;
 
-      // Update payment status
-      db.prepare('UPDATE payments SET status = ? WHERE stripe_session_id = ?').run('completed', session.id);
+      await db.run('UPDATE payments SET status = ? WHERE stripe_session_id = ?', ['completed', session.id]);
 
-      // Upgrade user plan
-      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(user_id);
+      const user = await db.get('SELECT * FROM users WHERE id = ?', [user_id]);
       if (user) {
-        db.prepare('UPDATE users SET plan = ?, updated_at = datetime(\'now\') WHERE id = ?').run(plan, user_id);
-        awardXP(user_id, plan === 'Elite' ? 250 : 100, `${plan} plan upgrade`);
-        createNotification(user_id, 'payment', 'Plan Upgraded', `You've been upgraded to the ${plan} plan!`);
+        await db.run("UPDATE users SET plan = ?, updated_at = datetime('now') WHERE id = ?", [plan, user_id]);
+        await awardXP(user_id, plan === 'Elite' ? 250 : 100, `${plan} plan upgrade`);
+        await createNotification(user_id, 'payment', 'Plan Upgraded', `You've been upgraded to the ${plan} plan!`);
       }
       break;
     }
     case 'checkout.session.expired': {
       const expired = event.data.object;
-      db.prepare('UPDATE payments SET status = ? WHERE stripe_session_id = ?').run('expired', expired.id);
+      await db.run('UPDATE payments SET status = ? WHERE stripe_session_id = ?', ['expired', expired.id]);
       break;
     }
   }
 }
 
-function upgradePlanDirect(email, plan) {
-  const db = getDb();
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+async function upgradePlanDirect(email, plan) {
+  const db = getDbClient();
+  const user = await db.get('SELECT * FROM users WHERE email = ?', [email]);
   if (!user) throw new Error('User not found');
 
-  db.prepare('UPDATE users SET plan = ?, updated_at = datetime(\'now\') WHERE email = ?').run(plan, email);
+  await db.run("UPDATE users SET plan = ?, updated_at = datetime('now') WHERE email = ?", [plan, email]);
 
-  // Record payment
-  db.prepare(`INSERT INTO payments (id, user_id, plan, amount, currency, status) VALUES (?, ?, ?, ?, ?, ?)`).run(
-    uuidv4(), user.id, plan, PLANS[plan]?.price || 0, 'usd', 'completed'
-  );
+  await db.run('INSERT INTO payments (id, user_id, plan, amount, currency, status) VALUES (?, ?, ?, ?, ?, ?)',
+    [uuidv4(), user.id, plan, PLANS[plan]?.price || 0, 'usd', 'completed']);
 
   const xpAmount = plan === 'Elite' ? 250 : 100;
-  awardXP(user.id, xpAmount, `${plan} plan upgrade`);
-  createNotification(user.id, 'payment', 'Plan Upgraded', `You've been upgraded to the ${plan} plan!`);
+  await awardXP(user.id, xpAmount, `${plan} plan upgrade`);
+  await createNotification(user.id, 'payment', 'Plan Upgraded', `You've been upgraded to the ${plan} plan!`);
 
   return { success: true, plan };
 }
@@ -117,9 +108,9 @@ function getStripe() {
   }
 }
 
-function getPaymentHistory(userId) {
-  const db = getDb();
-  return db.prepare('SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(userId);
+async function getPaymentHistory(userId) {
+  const db = getDbClient();
+  return await db.all('SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 10', [userId]);
 }
 
 module.exports = {

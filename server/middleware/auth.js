@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { getDb } = require('../db/database');
+const { getDbClient } = require('../db/database');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'interview-copilot-jwt-secret-change-in-production';
 const JWT_EXPIRY = process.env.JWT_EXPIRY || '30d';
@@ -61,12 +61,9 @@ function requireAdmin(req, res, next) {
   if (!req.user) {
     return res.status(401).json({ error: 'Authentication required.' });
   }
-  const db = getDb();
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  if (!user || user.email !== 'admin@interviewcopilot.com') {
+  if (req.user.email !== 'admin@interviewcopilot.com') {
     return res.status(403).json({ error: 'Admin access required.' });
   }
-  req.adminUser = user;
   next();
 }
 
