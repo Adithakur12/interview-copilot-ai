@@ -42,14 +42,13 @@ You have two options. Pick ONE.
    ⚠️ Use the **Internal** URL if your web service is on Render too (same region)
 5. Keep this URL, you'll use it as `DATABASE_URL`
 
-### Option B: Neon (free, fast)
+### Option B: Neon (free, fast) ✅ Already Have One
 
-1. Go to https://neon.tech → Sign up
-2. Create a project → copy the **connection string**:
-   ```
-   postgresql://user:password@ep-xxx.us-east-2.aws.neon.tech/neondb?sslmode=require
-   ```
-3. Keep this URL
+Your Neon connection string:
+```
+postgresql://neondb_owner:npg_FM2z7eWEXbyV@ep-empty-glitter-atnmae0b.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require
+```
+Keep this handy — you'll paste it as `DATABASE_URL` in the next step.
 
 ---
 
